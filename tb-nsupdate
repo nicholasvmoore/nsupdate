@@ -1,0 +1,46 @@
+#!/bin/bash
+#(c) 2014 Karl J. Vesterling
+#
+# PURPOSE:
+#
+# Maintaining Current HE-IPv6:
+#
+# Automatic IP6-in-IP4 Tunnel Endpoint configuration:
+# The script currently uses wget in order to update the ip6-in-ip4
+# tunnel endpoint to reflect the new internet addressable IP4 address
+# we were assigned.
+#
+# Restart Communications:
+# Some things need to be restarted in order for them to operate correcty.
+# the script has a section where you can add/remove start/stop service
+# statements.  This will probably be further refined by me such that a
+# configuration file may be used instead.
+# What it does currently is 
+
+## if we don't have a config file, skip it.
+if [ -r /etc/dhcp/tb-nsupdate.conf ];
+then
+    # get the configuration values.
+    source /etc/dhcp/tb-nsupdate.conf;
+    env
+	if ping6 -c 1 ipv6.google.com;
+	then
+		echo "We have IP6 connectivity!"
+	else
+		echo "We do not have IP6 connectivity, I think I should perform a tunnel update."
+		# First I bring down the IP6 interface to make sure that we're not going to try and
+		# go out a broken link.
+		ifdown he-ipv6
+		# Now that we know IP6 connectivity should be out of the question, we're forced to go IP4 in order
+		# to update the endpoint.
+		wget --no-check-certificate -T10 -O - - "https://${TUNNELBROKERUSERNAME}:${TUNNELBROKERPASSWORD}@ipv4.tunnelbroker.net/ipv4_end.php?tid=${TUNNELBROKERTUNNELID}&ip=${new_ip_address}" > /tmp/tunnelbrokerupdate.he-ipv6-up
+		# At this point I'm ASSUMING that it's been updated, if their site is down, or somehow connectivity is otherwise impeded to them
+		# we won't know whether or not the update worked and if it should be re-attempted.
+		# now we bring the he-ipv6 interface back up.
+		ifup he-ipv6
+		if ping6 -c 1 ipv6.google.com;
+		then
+			echo "We have restorted IP6 connectivity!"
+		fi
+	fi
+fi
