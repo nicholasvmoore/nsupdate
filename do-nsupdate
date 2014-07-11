@@ -69,7 +69,7 @@ CEOF
 				# Finally we bring the interface back up
 				ifup he-ipv6
 
-				# After bringing up the tunnel now we need to restart strongswan
+				# After bringing up the tunnel now we need to restart our strongswan tunnels because our IP changed
 				strongswan restart
 			fi
 		    fi
