@@ -44,6 +44,8 @@ server $SERVER
 zone $ZONE
 update delete $HOSTNAME.$ZONE A
 update add $HOSTNAME.$ZONE 300 A $new_ip_address
+update delete pdxhome.$ZONE A
+update add pdxhome.$ZONE 300 A $new_ip_address
 show
 send
 CEOF
