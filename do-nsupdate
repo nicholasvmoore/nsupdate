@@ -1,5 +1,5 @@
 #!/bin/bash
-#(c) 2014 Karl J. Vesterling
+#(c) 2014 Karl J. Vesterling && Nicholas V. Moore
 #
 # PURPOSE:
 #
@@ -21,107 +21,61 @@
 # configuration file may be used instead.
 # What it does currently is 
 
-#
-#
-#
-## if we don't have a config file, skip it.
+# if we don't have a config file, skip it.
 if [ -r /etc/dhcp/do-nsupdate.conf ];
 then
     # get the configuration values.
     source /etc/dhcp/do-nsupdate.conf;
-    env
 
-curl -k -s "https://${TUNNELBROKERUSERNAME}:${TUNNELBROKERPASSWORD}@ipv4.tunnelbroker.net/nic/update?hostname=${TUNNELBROKERTUNNELID}"
-
-    ## If this an update for our external interface
+    # If this an update for our external interface, this should be caught
+	# by the hooks but just in case, you can find some of the variables
+	# on the dhclient manpage http://linux.die.net/man/8/dhclient-script
     if [ "$interface" = "$EXTERNALINTERFACE" ];
     then
 	case "$reason" in
 	    BOUND|RENEW|REBIND)
-		## Legacy code:
-		## This was a perl script I had writ that would go out and
-		## use my STUN server(s) to determine it's external IP
-		## address.  Since most consumer routers don't know how to
-		## forward/support the IP6-in-IP4 protocol, the requirement is that the
-		## linux router running this script be assigned an internet
-		## addressable IP.
-		#while [ "$STUNERROR" != "no" ]; do
-		#	`/etc/dhcp/stun.pl`
-		#	env | grep STUN
-		#done
+		
+		# Load the config file
 		source /etc/dhcp/do-nsupdate.conf
+		
+		# This should probably have some more smarts to it, such as determining what the
+		# default ip6 gateway is and attempting a ping6 to it instead of google.
+		# That way we're not trying to fix a link that isn't broken due to DNS not
+		# resolving or otherwise.  We're trusting a lot of elements to be in place and working.
+		# Google is pretty stable, but it's not a 100% guarantee.
+		if ping6 -c 1 ipv6.google.com;
+		then
+			echo "We have IP6 connectivity!"
+		else
+			echo "We do not have IP6 connectivity, I think I should perform a tunnel update."
+			# First I bring down the IP6 interface to make sure that we're not going to try and
+			# go out a broken link.
+			ifdown he-ipv6
+		
+			# Now I update the Hurricane Electric endpoing IP
+			curl -k -s "https://${TUNNELBROKERUSERNAME}:${TUNNELBROKERPASSWORD}@ipv4.tunnelbroker.net/nic/update?hostname=${TUNNELBROKERTUNNELID}"
+			
+			# Finally we bring the interface back up
+			ifup he-ipv6
+
+			# After bringing up the tunnel now we need to restart our strongswan tunnels because our IP changed
+			strongswan restart
+		fi
+		
+		# Perform the zone updates
 		cat <<CEOF | nsupdate -k "$KEYFILE" -v
 server $SERVER
 zone $ZONE
-update delete $HOSTNAME.$ZONE. A
-update add $HOSTNAME.$ZONE. 300 A $new_ip_address
-update delete mail.$ZONE. A
-update add mail.$ZONE. 300 A $new_ip_address
-update delete smtp.$ZONE. A
-update add smtp.$ZONE. 300 A $new_ip_address
-update delete sip.$ZONE. A
-update add sip.$ZONE. 300 A $new_ip_address
-update delete vpn.$ZONE. A
-update add vpn.$ZONE. 300 A $new_ip_address
-update delete zenoss.$ZONE. A
-update add zenoss.$ZONE. 300 A $new_ip_address
-update delete ipv6-ip4.$ZONE. A
-update add ip6-ip4.$ZONE. 300 A $new_ip_address
-update delete unifi.$ZONE. A
-update add unifi.$ZONE. 300 A $new_ip_address
+update delete $HOSTNAME.$ZONE A
+update add $HOSTNAME.$ZONE 300 A $new_ip_address
 show
 send
 CEOF
-		if [ "$old_ip_address" != "$new_ip_address" ]
-		then
-		    ######  Now we need to go upgdate the firewall rules...
-		    # make sure the OLD ip address isn't NULL.
-		    if [ -n "$old_ip_address" ]
-		    then
-			echo "Fixing IP Tables firewall with new IP using: 'sed \"s${old_ip_address}/${new_ip_address}/g\"/"
-			cat /etc/iptables.up.rules | sed "s/${old_ip_address}/${new_ip_address}/g" > /tmp/iptables.up.rules
-			mv /tmp/iptables.up.rules /etc/iptables.up.rules
-			/sbin/iptables-restore < /etc/iptables.up.rules
-					
-			### This should probably have some more smarts to it, such as determining what the
-			### default ip6 gateway is and attempting a ping6 to it instead of google.
-			### That way we're not trying to fix a link that isn't broken due to DNS not
-			### resolving or otherwise.  We're trusting a lot of elements to be in place and working.
-			### Google is pretty stable, but it's not a 100% guarantee.
-			if ping6 -c 1 ipv6.google.com;
-			then
-				echo "We have IP6 connectivity!"
-			else
-				echo "We do not have IP6 connectivity, I think I should perform a tunnel update."
-				# First I bring down the IP6 interface to make sure that we're not going to try and
-				# go out a broken link.
-				ifdown he-ipv6
-				# Now that we know IP6 connectivity should be out of the question, we're forced to go IP4 in order
-				# to update the endpoint.
-				wget --no-check-certificate -T10 -O - - "https://${TUNNELBROKERUSERNAME}:${TUNNELBROKERPASSWORD}@ipv4.tunnelbroker.net/ipv4_end.php?tid=${TUNNELBROKERTUNNELID}&ip=${new_ip_address}" > /tmp/tunnelbrokerupdate.he-ipv6 down.
-				# At this point I'm ASSUMING that it's been updated, if their site is down, or somehow connectivity is otherwise impeded to them
-				# we won't know whether or not the update worked and if it should be re-attempted.
-				# now we bring the he-ipv6 interface back up.
-				ifup he-ipv6
-				
-			fi
-		    fi
-		    ## Here's where I restart the switch and assorted other stuphs.
-		    # First the UPNP daemon so that legacy IP4 Nat'd devices can obtain
-		    # the new external IP4 address, AND of course so that the resetting
-		    # of iptables which erased the UPNP rules can once again be in sync
-		    # with what the UPNP daemon knows things to be.
-		    stop linux-igd
-		    start linux-igd
-		    # Now we restart Freeswitch:
-		    stop freeswitch
-		    start freeswitch
-		fi
-		## I'm updating the endpoint yet again JUST IN CASE there is some sort of condition that
-		## we're not catching/getting.  This will have the effect of updating the endpoint any time that
-		## the DHCP server renews it's lease.
-		#wget --no-check-certificate -T10 -O - - "https://${TUNNELBROKERUSERNAME}:${TUNNELBROKERPASSWORD}@ipv4.tunnelbroker.net/ipv4_end.php?tid=${TUNNELBROKERTUNNELID}&ip=${new_ip_address}" > /tmp/tunnelbrokerupdate.he-ipv6-up
-		curl -k -s "https://${TUNNELBROKERUSERNAME}:${TUNNELBROKERPASSWORD}@ipv4.tunnelbroker.net/nic/update?hostname=${TUNNELBROKERTUNNELID}"
+		
+	# I'm updating the endpoint yet again JUST IN CASE there is some sort of condition that
+	# we're not catching/getting.  This will have the effect of updating the endpoint any time that
+	# the DHCP server renews it's lease.
+	#curl -k -s "https://${TUNNELBROKERUSERNAME}:${TUNNELBROKERPASSWORD}@ipv4.tunnelbroker.net/nic/update?hostname=${TUNNELBROKERTUNNELID}"
 	;;
 	esac
     fi
